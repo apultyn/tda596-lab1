@@ -1,4 +1,4 @@
-package main
+package tests
 
 import (
 	"bufio"
@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"http_server/src/server"
 )
 
 type testServer struct {
@@ -22,8 +24,13 @@ type testServer struct {
 
 func startTestServer(t *testing.T) testServer {
 	t.Helper()
+	return startTestServerWithPollTimeout(t, 0)
+}
+
+func startTestServerWithPollTimeout(t *testing.T, timeout time.Duration) testServer {
+	t.Helper()
 	root := t.TempDir()
-	s, err := newServer(root)
+	s, err := server.New(root, timeout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +39,7 @@ func startTestServer(t *testing.T) testServer {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- s.serve(listener) }()
+	go func() { done <- s.Serve(listener) }()
 	t.Cleanup(func() {
 		listener.Close()
 		select {
@@ -149,7 +156,7 @@ func TestErrors(t *testing.T) {
 		{"conflicting lengths", "POST /a.txt HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nabc", 400},
 		{"truncated headers", "GET /a.txt HTTP/1.1\r\nHost: localhost\r\n", 400},
 		{"bare line feeds", "GET /a.txt HTTP/1.1\nHost: localhost\n\n", 400},
-		{"large headers", "GET /a.txt HTTP/1.1\r\nHost: localhost\r\nX-Large: " + strings.Repeat("a", maxHeaderBytes) + "\r\n\r\n", 400},
+		{"large headers", "GET /a.txt HTTP/1.1\r\nHost: localhost\r\nX-Large: " + strings.Repeat("a", 64<<10) + "\r\n\r\n", 400},
 		{"traversal", getRequest("../outside.txt"), 400},
 		{"encoded traversal", getRequest("%2e%2e/outside.txt"), 400},
 		{"backslash traversal", getRequest("..%5coutside.txt"), 400},
@@ -321,7 +328,7 @@ func TestAtMostTenActiveClients(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("hello"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := newServer(root)
+	s, err := server.New(root, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +338,7 @@ func TestAtMostTenActiveClients(t *testing.T) {
 	}
 	started := make(chan struct{}, 20)
 	done := make(chan error, 1)
-	go func() { done <- s.serve(observedListener{Listener: listener, started: started}) }()
+	go func() { done <- s.Serve(observedListener{Listener: listener, started: started}) }()
 	clients := make([]net.Conn, 0, 11)
 	defer func() {
 		for _, conn := range clients {
@@ -402,11 +409,11 @@ func TestSymlinkCannotEscapeRoot(t *testing.T) {
 
 func TestInvalidArguments(t *testing.T) {
 	for _, args := range [][]string{nil, {"0"}, {"65536"}, {"-1"}, {"abc"}, {"8080", ".", "extra"}} {
-		if err := run(args); err == nil {
+		if err := server.Run(args); err == nil {
 			t.Errorf("run(%q) should fail", args)
 		}
 	}
-	if _, err := newServer(filepath.Join(t.TempDir(), "missing")); err == nil {
+	if _, err := server.New(filepath.Join(t.TempDir(), "missing"), 0); err == nil {
 		t.Error("nonexistent document root should fail")
 	}
 }
